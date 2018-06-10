@@ -1,14 +1,19 @@
-
 #include <stdint.h>
+
 typedef struct {
     uint32_t    r0, r1, r2, r3, r12, lr, pc, xpsr;
 } ExceptionRegisters_t;
 
 #define ARRAY_SIZE(x)	(sizeof(x) / sizeof((x)[0]))
-#define PROF_CNT	20
-#define PROF_ERR	32
-#define PROF_MASK (~(PROF_ERR - 1))
-
+#define PROF_CNT		15
+#define PROF_ERR		64
+#define PROF_MASK 		(~(PROF_ERR - 1))
+#define PROF_HITCNT_INC	10
+// whether hitCnt should decay, faster decay makes most time consuming functions
+// seems to have even more hit count
+#define PROF_DECAY		
+extern void ELCDIF_GetInterruptStatus(void);
+extern void PXP_GetStatusFlags(void);
 uint32_t s_ignrList[] = {
 	0,
 	// todo: add pc address ranges that you do not care, such as idle function.
@@ -31,8 +36,8 @@ Prof_t s_prof;
 void _ProfOnHit(ProfUnit_t *pItem, uint32_t pc) 
 {
 	pItem->baseAddr = pc & PROF_MASK;
-	s_prof.profCnt+= 0x02;
-	pItem->hitCnt += 0x02;
+	s_prof.profCnt+= PROF_HITCNT_INC;
+	pItem->hitCnt += PROF_HITCNT_INC;
 	pItem->hitRatio = 
 		(uint32_t)(((uint64_t)(pItem->hitCnt) << 10) / s_prof.profCnt);
 	// sort items descending
@@ -42,7 +47,20 @@ void _ProfOnHit(ProfUnit_t *pItem, uint32_t pc)
 		tmpItem = pItem[0]; pItem[0] = pItem[-1] ; pItem[-1] = tmpItem;
 	}
 }
-
+void ProfUpdateRate(float res)
+{
+  uint32_t i; 
+  float profCnt = s_prof.profCnt;
+  ProfUnit_t *pItem = s_prof.items;
+  for (i=0; i<PROF_CNT; i++, pItem++) {
+	pItem->hitRatio = 
+	  (uint32_t)( (float)(pItem->hitCnt) * res / profCnt);
+  }
+}
+void ProfReset(void)
+{
+  memset(&s_prof, 0, sizeof(s_prof));
+}
 void Profiling(uint32_t pc) 
 {
 	uint32_t i;
@@ -52,13 +70,17 @@ void Profiling(uint32_t pc)
 		if (pc - s_ignrList[i] < PROF_ERR)
 			return;
 	}
-	// apply decaying
-	if (s_prof.items[s_prof.decayNdx].hitCnt != 0) {
+#ifdef PROF_DECAY
+	// apply decaying, we do not decay to zero, this means PC samples do not
+	// get removed automatically, only can be pushed by later new more frequent
+	// hit PC samples 
+	if (s_prof.items[s_prof.decayNdx].hitCnt > 1) {
 		s_prof.items[s_prof.decayNdx].hitCnt--;
 		s_prof.profCnt--;
 	}
 	if (++s_prof.decayNdx == PROF_CNT)
 		s_prof.decayNdx = 0;
+#endif	
 	uint32_t freeNdx = PROF_CNT;
 	// >>> traverse to search existing same PC sample
 	for (i=0, pItem = s_prof.items; i<PROF_CNT; i++, pItem++) {
@@ -73,16 +95,37 @@ void Profiling(uint32_t pc)
 	if (i == PROF_CNT && freeNdx < PROF_CNT) {
 		// does not find, allocate for new
 		_ProfOnHit(s_prof.items + freeNdx, pc);
+	} else {
+	  // replace the last one. We must give new samples chance to compete to
+	  // get into the list.
+	  freeNdx = PROF_CNT - 1;
+	  s_prof.profCnt -= s_prof.items[freeNdx].hitCnt;
+	  s_prof.items[freeNdx].hitCnt = 0;
+	  _ProfOnHit(s_prof.items + freeNdx, pc);
 	}
 }
 
+volatile uint32_t g_tick;
+static uint32_t s_prescale;
+#define STICK_PRESCALE	1
 void SysTick_C_Handler(ExceptionRegisters_t *regs) {
+    
 	Profiling(regs->pc); 
-	// todo: other systick handler code
+	if (--s_prescale != 0)
+	  return;
+	s_prescale = STICK_PRESCALE;
+	g_tick++;
+	// todo: Further tick handling code
+}
+
+void SysTickInit(void)
+{
+	NVIC_SetPriority(SysTick_IRQn, 0);
+    SysTick_Config(CLOCK_GetFreq(kCLOCK_CoreSysClk) / 1000U / STICK_PRESCALE);
+	s_prescale = STICK_PRESCALE; 
 }
 
 #ifdef __CC_ARM
-
 __asm void SysTick_Handler(void) {
 	IMPORT	SysTick_C_Handler
 	PRESERVE8
@@ -95,7 +138,6 @@ __asm void SysTick_Handler(void) {
 	pop    {lr}
 	bx	   lr
 }
-
 #else
 __attribute__((naked))
 void SysTick_Handler(void) {
@@ -110,6 +152,5 @@ void SysTick_Handler(void) {
 		" pop  {r4-r11, lr}  \n"
 		" bx   lr  \n"
 	);
-
 }
 #endif
