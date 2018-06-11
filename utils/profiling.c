@@ -70,17 +70,17 @@ void Profiling(uint32_t pc)
 		if (pc - s_ignrList[i] < PROF_ERR)
 			return;
 	}
-#ifdef PROF_DECAY
-	// apply decaying, we do not decay to zero, this means PC samples do not
-	// get removed automatically, only can be pushed by later new more frequent
-	// hit PC samples 
-	if (s_prof.items[s_prof.decayNdx].hitCnt > 1) {
-		s_prof.items[s_prof.decayNdx].hitCnt--;
-		s_prof.profCnt--;
-	}
-	if (++s_prof.decayNdx == PROF_CNT)
-		s_prof.decayNdx = 0;
-#endif	
+	#ifdef PROF_DECAY
+		// apply decaying, we do not decay to zero, this means PC samples do not
+		// get removed automatically, only can be pushed by later new more frequent
+		// hit PC samples 
+		if (s_prof.items[s_prof.decayNdx].hitCnt > 1) {
+			s_prof.items[s_prof.decayNdx].hitCnt--;
+			s_prof.profCnt--;
+		}
+		if (++s_prof.decayNdx == PROF_CNT)
+			s_prof.decayNdx = 0;
+	#endif	
 	uint32_t freeNdx = PROF_CNT;
 	// >>> traverse to search existing same PC sample
 	for (i=0, pItem = s_prof.items; i<PROF_CNT; i++, pItem++) {
@@ -92,16 +92,18 @@ void Profiling(uint32_t pc)
 			freeNdx = i;
 		}
 	}
-	if (i == PROF_CNT && freeNdx < PROF_CNT) {
-		// does not find, allocate for new
-		_ProfOnHit(s_prof.items + freeNdx, pc);
-	} else {
-	  // replace the last one. We must give new samples chance to compete to
-	  // get into the list.
-	  freeNdx = PROF_CNT - 1;
-	  s_prof.profCnt -= s_prof.items[freeNdx].hitCnt;
-	  s_prof.items[freeNdx].hitCnt = 0;
-	  _ProfOnHit(s_prof.items + freeNdx, pc);
+	if (i == PROF_CNT) {
+		if (freeNdx < PROF_CNT) {
+			// does not find, allocate for new
+			_ProfOnHit(s_prof.items + freeNdx, pc);
+		} else {
+		  // replace the last one. We must give new samples chance to compete to
+		  // get into the list.
+		  freeNdx = PROF_CNT - 1;
+		  s_prof.profCnt -= s_prof.items[freeNdx].hitCnt;
+		  s_prof.items[freeNdx].hitCnt = 0;
+		  _ProfOnHit(s_prof.items + freeNdx, pc);
+		}
 	}
 }
 
